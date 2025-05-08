@@ -3,3 +3,5 @@ uvicorn[standard]
 redis
 aiomysql
 websockets
+pillow
+numpy
