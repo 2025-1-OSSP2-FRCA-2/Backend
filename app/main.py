@@ -2,10 +2,9 @@ from fastapi import FastAPI, WebSocket  # FastAPI 앱과 WebSocket 기능 import
 from app.api import websocket           # 우리가 정의한 라우터 모듈 임포트
 from fastapi.middleware.cors import CORSMiddleware  # CORS 미들웨어 설정용
 import uvicorn                          # 서버 실행을 위한 uvicorn
-import datetime                         # 시간 기록용
 
-
-app = FastAPI()                         # FastAPI 인스턴스 생성
+# FastAPI 인스턴스 생성
+app = FastAPI() 
 
 # 우리가 정의한 WebSocket 라우터(`/ws/student`)를 등록
 app.include_router(websocket.router)
