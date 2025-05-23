@@ -1,90 +1,129 @@
-
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from PIL import Image
 import io
 import os
 import torch
 import asyncio
+import json
 from collections import deque
 from app.models.efficientNetPrac import VideoEfficientNet, transform
+from app.api.concentrativeness import calculate_concentration
 
+# WebSocket 라우터 생성, "/ws" 경로로 설정
 router = APIRouter(prefix="/ws")
 
 # 모델 초기화
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-model = VideoEfficientNet(pretrained=True).to(device)
-model_path = os.path.join(os.path.dirname(__file__), '..', 'models', 'weights', 'model.pt')
-model.load_state_dict(torch.load(model_path, map_location=device))
-model.eval()
+device = 'cuda' if torch.cuda.is_available() else 'cpu'  # CUDA 사용 가능 여부 확인
+model = VideoEfficientNet(pretrained=True).to(device)  # 사전 학습된 모델 로드
+model_path = os.path.join(os.path.dirname(__file__), '..', 'models', 'weights', 'model.pt')  # 모델 가중치 경로 설정
+model.load_state_dict(torch.load(model_path, map_location=device))  # 모델 가중치 로드
+model.eval()  # 모델 평가 모드로 설정
 
-@router.websocket("/student")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    print("🟢 학생 WebSocket 연결됨")
+# 연결된 선생님 WebSocket 클라이언트를 저장할 set
+teacher_clients = set()
+# 연결된 학생 WebSocket 클라이언트를 저장할 딕셔너리 (학생 ID: WebSocket 객체)
+student_connections = {}
 
-    # 비동기 프레임 큐와 버퍼
-    frame_queue: asyncio.Queue = asyncio.Queue()
-    frame_buffer = deque(maxlen=8)
-
-    async def receiver():
-        """WebSocket에서 들어오는 프레임을 큐에 넣는 태스크"""
+@router.websocket("/prof")
+async def teacher_websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()  # WebSocket 연결 수락
+    teacher_clients.add(websocket)  # 연결된 선생님 클라이언트 추가
+    print(f"🔵 선생님 WebSocket 연결됨: {websocket}")
+    
+    # 선생님 연결 시 모든 학생에게 알림
+    for student_id, student_ws in student_connections.items():
         try:
-            while True:
-                data = await websocket.receive_bytes()
-                image = Image.open(io.BytesIO(data)).convert("RGB")
-                tensor = transform(image)
-                # 큐에 (입력시각, tensor) 튜플로 저장
-                await frame_queue.put((asyncio.get_event_loop().time(), tensor))
-        except WebSocketDisconnect:
-            # 연결 끊김을 알리기 위해 None을 푸시
-            await frame_queue.put(None)
-            print("🔴 수신 태스크 종료")
-
-    async def inferencer():
-        """0.5초마다 큐에서 최신 프레임 8개 뽑아 추론하는 태스크"""
-        try:
-            while True:
-                # 0.5초 간격으로 실행
-                await asyncio.sleep(0.5)
-
-                # 큐에서 가능한 모든 아이템 꺼내기
-                while not frame_queue.empty():
-                    item = await frame_queue.get()
-                    if item is None:
-                        # 수신이 종료된 신호
-                        return
-                    _, tensor = item
-                    frame_buffer.append(tensor)
-
-                # 버퍼가 꽉 찼을 때만 추론
-                if len(frame_buffer) == frame_buffer.maxlen:
-                    # [8, C, H, W] → [1, C, 8, H, W]
-                    clip = torch.stack(list(frame_buffer), dim=0)
-                    clip = clip.permute(1, 0, 2, 3).unsqueeze(0).to(device)
-                    with torch.no_grad():
-                        logits = model(clip)
-                        prob = torch.sigmoid(logits)
-                        preds = prob.gt(0.5).sum(dim=2).squeeze(0).tolist()
-
-                    emotions = ['boredom', 'confusion', 'engagement', 'frustration']
-                    results = {e: p for e, p in zip(emotions, preds)}
-                    print("→ 감정 상태 예측:", results)
-
+            await student_ws.send_text(json.dumps({"type": "teacher_connected", "message": "선생님이 입장하셨습니다."}))
         except Exception as e:
-            print("⚠️ 추론 태스크 에러:", e)
+            print(f"⚠️ 학생 {student_id}에게 선생님 연결 알림 전송 실패: {e}")
 
-    # 수신·추론 태스크 동시 실행
-    recv_task = asyncio.create_task(receiver())
-    infer_task = asyncio.create_task(inferencer())
+    try:
+        while True:
+            message = await websocket.receive_text()  # 메시지 수신
+            print(f"선생님으로부터 받은 메시지: {message}")
+            try:
+                msg_data = json.loads(message)  # JSON 메시지 파싱
+                if msg_data.get("type") == "warning" and "student_id" in msg_data and "message" in msg_data:
+                    await send_warning_to_student(msg_data["student_id"], msg_data["message"])  # 경고 메시지 전송
+            except json.JSONDecodeError:
+                print(f"⚠️ 유효하지 않은 JSON 메시지: {message}")
 
-    # 둘 중 하나라도 완료될 때까지 대기
-    done, pending = await asyncio.wait(
-        {recv_task, infer_task},
-        return_when=asyncio.FIRST_COMPLETED,
-    )
+    except WebSocketDisconnect:
+        teacher_clients.remove(websocket)  # 연결 종료 시 클라이언트 제거
+        print(f"🔴 선생님 WebSocket 연결 종료됨: {websocket}")
 
-    # 남은 태스크가 있으면 취소
-    for task in pending:
-        task.cancel()
+        # 선생님 연결 종료 시 모든 학생에게 알림
+        disconnect_message = json.dumps({"type": "teacher_disconnected", "message": "선생님과의 연결이 끊어졌습니다."})
+        for student_id, student_ws in list(student_connections.items()):
+            try:
+                await student_ws.send_text(disconnect_message)
+                print(f"🔴 학생 {student_id}에게 선생님 연결 종료 알림 전송")
+            except Exception as e:
+                print(f"⚠️ 학생 {student_id}에게 연결 종료 알림 전송 실패: {e}")
 
-    print("🔴 WebSocket 처리 종료")
+@router.websocket("/student/{student_id}")
+async def student_websocket_endpoint(websocket: WebSocket, student_id: str):
+    await websocket.accept()  # WebSocket 연결 수락
+    student_connections[student_id] = websocket  # 학생 연결 저장
+    print(f"🟢 학생 WebSocket 연결됨 (ID: {student_id})")
+
+    # 학생 연결 시 현재 선생님 연결 상태 알림
+    if teacher_clients:
+        await websocket.send_text(json.dumps({"type": "teacher_connected", "message": "선생님이 입장하셨습니다."}))
+    else:
+        await websocket.send_text(json.dumps({"type": "teacher_disconnected", "message": "선생님이 입장하지 않았습니다."}))
+
+    frame_buffer = deque(maxlen=8)  # 프레임 버퍼 초기화
+
+    try:
+        while True:
+            data = await websocket.receive_bytes()  # 이미지 데이터 수신
+            image = Image.open(io.BytesIO(data)).convert("RGB")  # 이미지 변환
+            img_tensor = transform(image)  # 이미지 텐서 변환
+            frame_buffer.append(img_tensor)  # 프레임 버퍼에 추가
+
+            if len(frame_buffer) == 8:
+                clip = torch.stack(list(frame_buffer), dim=0).permute(1, 0, 2, 3).unsqueeze(0).to(device)  # 클립 생성
+
+                with torch.no_grad():
+                    logits = model(clip)  # 모델 예측
+                    prob = torch.sigmoid(logits)  # 확률 계산
+                    preds = prob.gt(0.5).sum(dim=2).squeeze(0).tolist()  # 예측 결과 변환
+
+                emotions_binary = ['boredom', 'confusion', 'engagement', 'frustration']  # 감정 상태
+                emotion_results = {emotion: pred for emotion, pred in zip(emotions_binary, preds)}  # 감정 결과 매핑
+                print(f"→ 학생 {student_id} 감정 상태 예측:", emotion_results)
+
+                # 감정 결과를 바탕으로 집중도 계산
+                concentration_score = calculate_concentration(emotion_results)
+                print(f"→ 학생 {student_id} 집중도: {concentration_score}")
+
+                # 계산된 집중도 결과를 선생님 클라이언트에게 실시간 전송
+                message_for_teachers = json.dumps({
+                    "type": "student_data",
+                    "student_id": student_id,
+                    "emotion_results": emotion_results,
+                    "concentration": concentration_score
+                })
+
+                for teacher_ws in teacher_clients:
+                    try:
+                        await teacher_ws.send_text(message_for_teachers)  # 집중도 결과 전송
+                    except Exception as e:
+                        print(f"⚠️ 선생님에게 학생 {student_id}의 집중도 전송 실패: {e}")
+
+    except WebSocketDisconnect:
+        if student_id in student_connections:
+            del student_connections[student_id]  # 연결 종료 시 학생 제거
+        print(f"🔴 학생 WebSocket 연결 종료됨 (ID: {student_id})")
+
+async def send_warning_to_student(student_id: str, message: str):
+    student_ws = student_connections.get(student_id)  # 학생 WebSocket 가져오기
+    if student_ws:
+        try:
+            await student_ws.send_text(json.dumps({"type": "warning", "message": message}))  # 경고 메시지 전송
+            print(f"📢 학생 {student_id}에게 경고 메시지 전송: {message}")
+        except Exception as e:
+            print(f"⚠️ 학생 {student_id}에게 경고 메시지 전송 실패: {e}")
+    else:
+        print(f"⚠️ 학생 {student_id}의 WebSocket 연결을 찾을 수 없습니다.")
