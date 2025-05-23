@@ -127,3 +127,18 @@ async def send_warning_to_student(student_id: str, message: str):
             print(f"⚠️ 학생 {student_id}에게 경고 메시지 전송 실패: {e}")
     else:
         print(f"⚠️ 학생 {student_id}의 WebSocket 연결을 찾을 수 없습니다.")
+
+@router.websocket("/check_connection")
+async def check_connection_endpoint(websocket: WebSocket):
+    try:
+        await websocket.accept()
+        # 선생님 연결 상태 확인
+        teacher_connected = len(teacher_clients) > 0
+        # 연결 상태 전송
+        await websocket.send_text(json.dumps({
+            "teacher_connected": teacher_connected
+        }))
+    except Exception as e:
+        print(f"⚠️ 연결 상태 확인 중 오류 발생: {e}")
+    finally:
+        await websocket.close()
