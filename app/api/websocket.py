@@ -106,7 +106,7 @@ async def student_websocket_endpoint(websocket: WebSocket, student_id: str):
                     "concentration": concentration_score
                 })
 
-                for teacher_ws in teacher_clients:
+                for teacher_ws in list (teacher_clients):
                     try:
                         await teacher_ws.send_text(message_for_teachers)  # 집중도 결과 전송
                     except Exception as e:
