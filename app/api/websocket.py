@@ -23,6 +23,50 @@ model.eval()  # 모델 평가 모드로 설정
 teacher_clients = set()
 # 연결된 학생 WebSocket 클라이언트를 저장할 딕셔너리 (학생 ID: WebSocket 객체)
 student_connections = {}
+# WebRTC 시그널링용 연결 관리
+webrtc_students = {}  # student_id: websocket
+webrtc_profs = set()  # 여러 강사 지원 가능
+
+@router.websocket("/webrtc/student/{student_id}")
+async def webrtc_student_ws(websocket: WebSocket, student_id: str):
+    await websocket.accept()  # WebSocket 연결 수락
+    webrtc_students[student_id] = websocket  # 학생 WebSocket 저장
+    print(f"🟢 WebRTC 학생 연결: {student_id}")
+
+    try:
+        while True:
+            msg = await websocket.receive_text()  # 텍스트 메시지 수신
+            data = json.loads(msg)  # JSON 데이터 파싱
+            # offer/candidate → 모든 강사에게 중계
+            for prof_ws in list(webrtc_profs):
+                try:
+                    await prof_ws.send_text(json.dumps({**data, "from_student_id": student_id}))  # 강사에게 데이터 전송
+                except Exception as e:
+                    print(f"⚠️ 강사에게 WebRTC 시그널링 전송 실패: {e}")
+    except WebSocketDisconnect:
+        del webrtc_students[student_id]  # 연결 종료 시 학생 제거
+        print(f"🔴 WebRTC 학생 연결 종료: {student_id}")
+
+@router.websocket("/webrtc/prof")
+async def webrtc_prof_ws(websocket: WebSocket):
+    await websocket.accept()  # WebSocket 연결 수락
+    webrtc_profs.add(websocket)  # 강사 WebSocket 저장
+    print("🟢 WebRTC 강사 연결")
+
+    try:
+        while True:
+            msg = await websocket.receive_text()  # 텍스트 메시지 수신
+            data = json.loads(msg)  # JSON 데이터 파싱
+            # answer/candidate → 해당 학생에게 중계
+            to_student_id = data.get("to_student_id")
+            if to_student_id and to_student_id in webrtc_students:
+                try:
+                    await webrtc_students[to_student_id].send_text(msg)  # 학생에게 데이터 전송
+                except Exception as e:
+                    print(f"⚠️ 학생에게 WebRTC 시그널링 전송 실패: {e}")
+    except WebSocketDisconnect:
+        webrtc_profs.remove(websocket)  # 연결 종료 시 강사 제거
+        print("🔴 WebRTC 강사 연결 종료")
 
 @router.websocket("/prof")
 async def teacher_websocket_endpoint(websocket: WebSocket):
@@ -33,7 +77,7 @@ async def teacher_websocket_endpoint(websocket: WebSocket):
     # 선생님 연결 시 모든 학생에게 알림
     for student_id, student_ws in student_connections.items():
         try:
-            await student_ws.send_text(json.dumps({"type": "teacher_connected", "message": "선생님이 입장하셨습니다."}))
+            await student_ws.send_text(json.dumps({"type": "teacher_connected", "message": "선생님이 입장하셨습니다."}))  # 학생에게 알림 전송
         except Exception as e:
             print(f"⚠️ 학생 {student_id}에게 선생님 연결 알림 전송 실패: {e}")
 
@@ -56,7 +100,7 @@ async def teacher_websocket_endpoint(websocket: WebSocket):
         disconnect_message = json.dumps({"type": "teacher_disconnected", "message": "선생님과의 연결이 끊어졌습니다."})
         for student_id, student_ws in list(student_connections.items()):
             try:
-                await student_ws.send_text(disconnect_message)
+                await student_ws.send_text(disconnect_message)  # 학생에게 연결 종료 알림 전송
                 print(f"🔴 학생 {student_id}에게 선생님 연결 종료 알림 전송")
             except Exception as e:
                 print(f"⚠️ 학생 {student_id}에게 연결 종료 알림 전송 실패: {e}")
@@ -69,9 +113,9 @@ async def student_websocket_endpoint(websocket: WebSocket, student_id: str):
 
     # 학생 연결 시 현재 선생님 연결 상태 알림
     if teacher_clients:
-        await websocket.send_text(json.dumps({"type": "teacher_connected", "message": "선생님이 입장하셨습니다."}))
+        await websocket.send_text(json.dumps({"type": "teacher_connected", "message": "선생님이 입장하셨습니다."}))  # 학생에게 알림 전송
     else:
-        await websocket.send_text(json.dumps({"type": "teacher_disconnected", "message": "선생님이 입장하지 않았습니다."}))
+        await websocket.send_text(json.dumps({"type": "teacher_disconnected", "message": "선생님이 입장하지 않았습니다."}))  # 학생에게 알림 전송
 
     frame_buffer = deque(maxlen=8)  # 프레임 버퍼 초기화
 
@@ -106,7 +150,7 @@ async def student_websocket_endpoint(websocket: WebSocket, student_id: str):
                     "concentration": concentration_score
                 })
 
-                for teacher_ws in list (teacher_clients):
+                for teacher_ws in list(teacher_clients):
                     try:
                         await teacher_ws.send_text(message_for_teachers)  # 집중도 결과 전송
                     except Exception as e:
@@ -131,7 +175,7 @@ async def send_warning_to_student(student_id: str, message: str):
 @router.websocket("/check_connection")
 async def check_connection_endpoint(websocket: WebSocket):
     try:
-        await websocket.accept()
+        await websocket.accept()  # WebSocket 연결 수락
         # 선생님 연결 상태 확인
         teacher_connected = len(teacher_clients) > 0
         # 연결 상태 전송
@@ -141,4 +185,4 @@ async def check_connection_endpoint(websocket: WebSocket):
     except Exception as e:
         print(f"⚠️ 연결 상태 확인 중 오류 발생: {e}")
     finally:
-        await websocket.close()
+        await websocket.close()  # WebSocket 연결 종료
