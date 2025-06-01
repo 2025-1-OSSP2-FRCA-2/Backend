@@ -5,3 +5,6 @@ aiomysql
 websockets
 pillow
 numpy
+pandas
+torch
+torchvision
