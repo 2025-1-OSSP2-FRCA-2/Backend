@@ -176,6 +176,8 @@ async def send_warning_to_student(student_id: str, message: str):
 async def check_connection_endpoint(websocket: WebSocket):
     try:
         await websocket.accept()  # WebSocket 연결 수락
+        print("WebSocket connection accepted")  # 디버깅용 로그
+
         # 선생님 연결 상태 확인
         teacher_connected = len(teacher_clients) > 0
         # 연결 상태 전송
