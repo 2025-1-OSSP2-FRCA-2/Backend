@@ -10,7 +10,7 @@ from app.models.efficientNetPrac import VideoEfficientNet, transform
 from app.api.concentrativeness import calculate_concentration
 
 # WebSocket 라우터 생성, "/ws" 경로로 설정
-router = APIRouter(prefix="/ws")
+router = APIRouter(prefix="/api/ws")
 
 # 모델 초기화
 device = 'cuda' if torch.cuda.is_available() else 'cpu'  # CUDA 사용 가능 여부 확인
