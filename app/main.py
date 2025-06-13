@@ -13,7 +13,7 @@ app.include_router(websocket_router)
 # → 실제 배포 시에는 allow_origins=["http://yourdomain.com"] 등으로 제한 필요
 app.add_middleware(
     CORSMiddleware,
-    # allow_origins=["http://localhost:5173"],  # Vite 개발 서버
+    # allow_origins=["http://localhost:5173"],  # Vite 개발 서버.
     allow_origins=["*"],     # 모든 출처 허용 (개발용)
     allow_methods=["*"],     # 모든 HTTP 메서드 허용
     allow_headers=["*"],     # 모든 헤더 허용
