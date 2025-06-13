@@ -30,12 +30,13 @@ def calculate_concentration(emotion_results: dict) -> float:
     confusion = emotion_results.get('confusion', 0)
     frustration = emotion_results.get('frustration', 0)
 
-    # 긍정적인 감정의 가중치
-    positive_score = engagement * 0.6 # 집중도가 높으면 0.6점 기여
-    # 부정적인 감정의 가중치 (1에서 해당 감정값을 빼서, 감정이 낮을수록 높은 점수를 얻게 함)
-    negative_score = (1 - boredom) * 0.15 + \
-                     (1 - confusion) * 0.15 + \
-                     (1 - frustration) * 0.1
+    # 긍정적인 감정의 가중치 증가
+    positive_score = engagement * 0.7  # 집중도가 높으면 0.7점 기여 (0.6에서 증가)
+    
+    # 부정적인 감정의 가중치 감소
+    negative_score = (1 - boredom) * 0.1 + \
+                     (1 - confusion) * 0.1 + \
+                     (1 - frustration) * 0.1  # 각각 0.15, 0.15, 0.1에서 0.1로 감소
 
     # 총 집중도 점수 (0 ~ 1 사이로 정규화)
     concentration_score = positive_score + negative_score
